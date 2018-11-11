@@ -1,0 +1,872 @@
+/*! *********************************************************************************
+* \addtogroup Temperature Collector
+* @{
+********************************************************************************** */
+/*!
+* Copyright (c) 2015, Freescale Semiconductor, Inc.
+* All rights reserved.
+* \file app.c
+* This file is the source file for the Temperature Collector application
+*
+* Redistribution and use in source and binary forms, with or without modification,
+* are permitted provided that the following conditions are met:
+*
+* o Redistributions of source code must retain the above copyright notice, this list
+*   of conditions and the following disclaimer.
+*
+* o Redistributions in binary form must reproduce the above copyright notice, this
+*   list of conditions and the following disclaimer in the documentation and/or
+*   other materials provided with the distribution.
+*
+* o Neither the name of Freescale Semiconductor, Inc. nor the names of its
+*   contributors may be used to endorse or promote products derived from this
+*   software without specific prior written permission.
+*
+* THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+* ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+* WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+* DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+* ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+* (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+* LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+* ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+* (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+* SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+*/
+
+/************************************************************************************
+*************************************************************************************
+* Include
+*************************************************************************************
+************************************************************************************/
+/* Framework / Drivers */
+#include "RNG_Interface.h"
+#include "Keyboard.h"
+#include "LED.h"
+#include "TimersManager.h"
+#include "FunctionLib.h"
+#include "shell.h"
+#include "Panic.h"
+#include "PWR_Interface.h"
+
+/* BLE Host Stack */
+#include "gatt_interface.h"
+#include "gatt_server_interface.h"
+#include "gatt_client_interface.h"
+#include "gatt_database.h"
+#include "gap_interface.h"
+#include "gatt_db_app_interface.h"
+#include "gatt_db_handles.h"
+
+/* Profile / Services */
+#include "mesh_interface.h"
+#include "mesh_config_client.h"
+#include "mesh_light_client.h"
+#include "mesh_temperature_client.h"
+
+#include "string.h"
+#include "stdlib.h"
+#include "ApplMain.h"
+#include "app.h"
+
+/************************************************************************************
+*************************************************************************************
+* Private macros
+*************************************************************************************
+************************************************************************************/
+
+/************************************************************************************
+*************************************************************************************
+* Private type definitions
+*************************************************************************************
+************************************************************************************/
+
+/************************************************************************************
+*************************************************************************************
+* Private memory declarations
+*************************************************************************************
+************************************************************************************/
+/* Timers */
+static tmrTimerID_t mAppTimerId;
+
+static bool_t mLog = TRUE;
+
+/************************************************************************************
+*************************************************************************************
+* Private functions prototypes
+*************************************************************************************
+************************************************************************************/
+static void AppConfig();
+
+static meshResult_t MeshGenericCallback
+(
+    meshGenericEvent_t* pEvent
+);
+
+static meshResult_t MeshConfigClientCallback
+(
+    meshConfigClientEvent_t* pEvent
+);
+
+static meshResult_t MeshLightClientCallback
+(
+    meshLightClientEvent_t* pEvent
+);
+
+static meshResult_t MeshTemperatureClientCallback
+(
+    meshTemperatureClientEvent_t* pEvent
+);
+
+int8_t ShellMesh_Publish(uint8_t argc, char * argv[]);
+int8_t ShellMesh_Subscribe(uint8_t argc, char * argv[]);
+int8_t ShellMesh_Relay(uint8_t argc, char * argv[]);
+int8_t ShellMesh_Ttl(uint8_t argc, char * argv[]);
+int8_t ShellMesh_Light(uint8_t argc, char * argv[]);
+int8_t ShellMesh_Demo(uint8_t argc, char * argv[]);
+int8_t ShellMesh_Log(uint8_t argc, char * argv[]);
+
+const cmd_tbl_t mMeshPublishCmd =
+{
+    .name = "pub",
+    .maxargs = 4,
+    .repeatable = 1,
+    .cmd = ShellMesh_Publish,
+    .help = "Usage:\r\n"
+        ">>> pub get ID\r\n"
+        ">>> pub set ID address\r\n",
+    .usage = "Get/set publishing addresses for a Switch ID."
+};
+const cmd_tbl_t mMeshSubscribeCmd =
+{
+    .name = "sub",
+    .maxargs = 4,
+    .repeatable = 1,
+    .cmd = ShellMesh_Subscribe,
+    .help = "Usage:\r\n"
+        ">>> sub get ID\r\n"
+        ">>> sub add ID address\r\n"
+        ">>> sub rem ID address\r\n",
+    .usage = "Get/add/remove subscription addresses for a Light ID."
+};
+const cmd_tbl_t mMeshRelayCmd =
+{
+    .name = "relay",
+    .maxargs = 4,
+    .repeatable = 1,
+    .cmd = ShellMesh_Relay,
+    .help = "Usage:\r\n"
+        ">>> relay get ID\r\n"
+        ">>> relay set ID value\r\n",
+    .usage = "Get/set Relay state for a node ID."
+};
+const cmd_tbl_t mMeshTtlCmd =
+{
+    .name = "ttl",
+    .maxargs = 4,
+    .repeatable = 1,
+    .cmd = ShellMesh_Ttl,
+    .help = "Usage:\r\n"
+        ">>> ttl get ID\r\n"
+        ">>> ttl set ID value\r\n",
+    .usage = "Get/set TTL value for a node ID."
+};
+const cmd_tbl_t mMeshLightCmd =
+{
+    .name = "light",
+    .maxargs = 3,
+    .repeatable = 1,
+    .cmd = ShellMesh_Light,
+    .help = "Usage:\r\n"
+        ">>> light on\r\n"
+        ">>> light off\r\n"
+        ">>> light toggle\r\n"
+        ">>> light on id\r\n"
+        ">>> light off id\r\n"
+        ">>> light toggle id\r\n",
+    .usage = "Send light commands."
+};
+
+const cmd_tbl_t mMeshLogCmd =
+{
+    .name = "l",
+    .maxargs = 1,
+    .repeatable = 1,
+    .cmd = ShellMesh_Log,
+    .help = "Usage:\r\n"
+        ">>> l\r\n",
+    .usage = "Toggles the logging of incoming packets ON and OFF."
+};
+
+/************************************************************************************
+*************************************************************************************
+* Public functions
+*************************************************************************************
+************************************************************************************/
+
+/*! *********************************************************************************
+* \brief    Initializes application specific functionality before the BLE stack init.
+*
+********************************************************************************** */
+void BleApp_Init(void)
+{      
+        /* UI */
+    shell_init("BLE MESH >>> ");
+    shell_register_function((cmd_tbl_t *)&mMeshPublishCmd);
+    shell_register_function((cmd_tbl_t *)&mMeshSubscribeCmd);
+    shell_register_function((cmd_tbl_t *)&mMeshRelayCmd);
+    shell_register_function((cmd_tbl_t *)&mMeshTtlCmd);
+    shell_register_function((cmd_tbl_t *)&mMeshLightCmd);
+    shell_register_function((cmd_tbl_t *)&mMeshLogCmd);
+}
+
+/*! *********************************************************************************
+* \brief        Handles keyboard events.
+*
+* \param[in]    events    Key event structure.
+********************************************************************************** */
+void BleApp_HandleKeys(key_event_t events)
+{ 
+    switch (events)
+    {
+        default:
+            break;
+    }
+}
+
+/*! *********************************************************************************
+* \brief        Handles BLE generic callback.
+*
+* \param[in]    pGenericEvent    Pointer to gapGenericEvent_t.
+********************************************************************************** */
+void BleApp_GenericCallback (gapGenericEvent_t* pGenericEvent)
+{
+    switch (pGenericEvent->eventType)
+    {
+        case gInitializationComplete_c:    
+        {
+            AppConfig();
+        }
+        break;    
+
+        case gInternalError_c:
+        {
+            Led2On();
+            panic(0,0,0,0);
+        }
+        break;
+        
+        default: 
+            break;
+    }
+}
+
+/************************************************************************************
+*************************************************************************************
+* Private functions
+*************************************************************************************
+************************************************************************************/
+
+/*! *********************************************************************************
+* \brief        Configures BLE Stack after initialization. Usually used for
+*               configuring advertising, scanning, white list, services, et al.
+*
+********************************************************************************** */
+static void AppConfig()
+{
+    mAppTimerId = TMR_AllocateTimer();
+	
+    MeshConfigClient_RegisterCallback(MeshConfigClientCallback);
+    MeshLightClient_RegisterCallback(MeshLightClientCallback);
+    MeshTemperatureClient_RegisterCallback(MeshTemperatureClientCallback);
+    MeshCommissioner_Init(MeshGenericCallback);
+    
+}
+
+static meshResult_t MeshGenericCallback
+(
+    meshGenericEvent_t* pEvent
+)
+{
+    switch (pEvent->eventType)
+    {
+        case gMeshInitComplete_c:
+            {
+                shell_write("\r\n\r\nMesh Commissioner initialization complete!\r\n");
+                shell_refresh();
+            }               
+            break;
+            
+        default:
+            {
+                /* Ignore */
+            }
+            break;
+    }
+    
+    return gMeshSuccess_c;
+}
+
+static meshResult_t MeshConfigClientCallback
+(
+    meshConfigClientEvent_t* pEvent
+)
+{
+    switch (pEvent->eventType)
+    {
+        case gMeshConfigReceivedPublishAddress_c:
+            {                
+                if (mLog)
+                {
+                    if (pEvent->eventData.receivedPublishAddress.profileId == gMeshProfileLighting_c)
+                    {
+                        uint8_t id = GetIdFromMeshAddress(pEvent->eventData.receivedPublishAddress.source);
+                        shell_printf("\r\n -> Received Publish Status: Node %d publishes Light Toggle on 0x%04X. \r\n", 
+                                     id, pEvent->eventData.receivedPublishAddress.address);
+                        shell_refresh();
+                    }
+                }
+            }
+            break;
+            
+        case gMeshConfigReceivedRelayState_c:
+            {
+                if (mLog)
+                {
+                    uint8_t id = GetIdFromMeshAddress(pEvent->eventData.receivedRelayState.source);
+                    shell_printf("\r\n -> Received Relay Status: Node %d has relay state %d. \r\n", 
+                                 id, pEvent->eventData.receivedRelayState.relayEnabled);
+                    shell_refresh();
+                }
+            }
+            break;
+            
+        case gMeshConfigReceivedSubscriptionList_c:
+            {                
+                if (mLog)
+                {
+                    if (pEvent->eventData.receivedSubscriptionList.profileId == gMeshProfileLighting_c)
+                    {
+                        uint8_t id = GetIdFromMeshAddress(pEvent->eventData.receivedSubscriptionList.source);
+                        uint8_t numAddresses = pEvent->eventData.receivedSubscriptionList.listSize;
+                        meshAddress_t* aAddresses = pEvent->eventData.receivedSubscriptionList.aAddressList;
+                        shell_printf("\r\n -> Received Subscription List: Node %d is subscribed to Light State messages to 0x%04X", id, aAddresses[0]);
+                        uint8_t index = 1;                                            
+                        while (index < numAddresses)
+                        {
+                            shell_printf(", 0x%04X", aAddresses[index++]);
+                        }
+                        shell_printf(". \r\n");
+                        shell_refresh();
+                    }
+                }
+            }
+            break;
+            
+        case gMeshConfigReceivedTtl_c:
+            {
+                if (mLog)
+                {
+                    uint8_t id = GetIdFromMeshAddress(pEvent->eventData.receivedTtl.source);
+                    shell_printf("\r\n -> Received TTL Status: Node %d has TTL %d. \r\n", 
+                                 id, pEvent->eventData.receivedTtl.ttl);
+                    shell_refresh();
+                }
+            }
+            break;
+            
+        default:
+            {
+                /* Ignore */
+            }
+            break;
+    }
+    return gMeshSuccess_c;
+}
+
+static meshResult_t MeshLightClientCallback
+(
+    meshLightClientEvent_t* pEvent
+)
+{
+    switch (pEvent->eventType)
+    {
+        case gMeshLightReceivedLightState_c:
+            {                
+                if (mLog)
+                {
+                    uint8_t id = GetIdFromMeshAddress(pEvent->eventData.receivedLightState.source);
+                    if (pEvent->eventData.receivedLightState.lightOn)
+                    {
+                        shell_printf("\r\n -> Received Light State: Light %d is ON. \r\n", id);
+                    }
+                    else
+                    {
+                        shell_printf("\r\n -> Received Light State: Light %d is OFF. \r\n", id);
+                    }
+                    shell_refresh();
+                }
+            }
+            break;
+            
+        case gMeshLightReceivedReportState_c:
+            {
+
+            }
+            break;
+            
+        default:
+            {
+                /* Ignore */
+            }
+            break;
+    }
+    return gMeshSuccess_c;
+}
+
+static meshResult_t MeshTemperatureClientCallback
+(
+    meshTemperatureClientEvent_t* pEvent
+)
+{
+    switch (pEvent->eventType)
+    {
+        case gMeshTemperatureReceivedTemperature_c:
+            {                
+                if (mLog)
+                {
+                    uint8_t id = GetIdFromMeshAddress(pEvent->eventData.receivedTemperature.source);
+                    shell_printf("\r\n -> Received Temperature measurement from ID %d: %d degrees Celsius. \r\n", 
+                                 id,
+                                 pEvent->eventData.receivedTemperature.tempCelsius);
+                    shell_refresh();
+                }
+            }
+            break;
+            
+        case gMeshTemperatureReceivedReportState_c:
+            {
+
+            }
+            break;
+                        
+        default:
+            {
+                /* Ignore */
+            }
+            break;
+    }
+    return gMeshSuccess_c;
+}
+   
+int8_t ShellMesh_Publish(uint8_t argc, char * argv[])
+{
+    if (argc > 4 || argc < 3)
+    {
+        return CMD_RET_USAGE;
+    }
+    
+    meshResult_t result;
+    if (argc == 3)
+    {
+        if (strcmp(argv[1], "get"))
+        {
+            return CMD_RET_USAGE;
+        }
+        int8_t id = atoi(argv[2]);
+        meshAddress_t destination = GetMeshAddressFromId(id);
+        result = MeshConfigClient_GetPublishAddress(destination, gMeshProfileLighting_c);
+        if (result == gMeshSuccess_c)
+        {
+            shell_printf("< Publish Get command sent to ID %d >", id);
+       }
+        else
+        {
+            shell_printf("< Cannot send command - Error code: 0x%04x >", result);
+        }
+    }
+    else /* argc == 4 */
+    {
+        if (!strcmp(argv[1], "set"))
+        {
+            int8_t id = atoi(argv[2]);
+            int16_t add = atoi(argv[3]);
+            meshAddress_t destination = GetMeshAddressFromId(id);
+            result = MeshConfigClient_SetPublishAddress(destination, gMeshProfileLighting_c, add);
+            if (result == gMeshSuccess_c)
+            {
+                shell_printf("< Publish Set command sent to ID %d >", id);
+            }
+            else
+            {
+                shell_printf("< Cannot send command - Error code: 0x%04x >", result);
+            }
+        }
+        else
+        {
+            return CMD_RET_USAGE;
+        }
+    }
+    
+    if (result == gMeshSuccess_c)
+    {
+        return CMD_RET_SUCCESS;
+    }
+    else
+    {
+        return CMD_RET_FAILURE;
+    }
+}
+
+int8_t ShellMesh_Subscribe(uint8_t argc, char * argv[])
+{
+        if (argc > 4 || argc < 3)
+    {
+        return CMD_RET_USAGE;
+    }
+    
+    meshResult_t result;
+    if (argc == 3)
+    {
+        if (strcmp(argv[1], "get"))
+        {
+            return CMD_RET_USAGE;
+        }
+        int8_t id = atoi(argv[2]);
+        meshAddress_t destination = GetMeshAddressFromId(id);
+        result = MeshConfigClient_GetSubscriptionList(destination, gMeshProfileLighting_c);
+        if (result == gMeshSuccess_c)
+        {
+            shell_printf("< Subscription List Get command sent to %d >", id);
+        }
+        else
+        {
+            shell_printf("< Cannot send command - Error code: 0x%04x >", result);
+        }
+    }
+    else /* argc == 4 */
+    {
+        if (!strcmp(argv[1], "add"))
+        {
+            int8_t id = atoi(argv[2]);
+            int16_t add = atoi(argv[3]);
+            if (id != 0)
+            {
+                meshAddress_t destination = GetMeshAddressFromId(id);
+                result = MeshConfigClient_Subscribe(destination, gMeshProfileLighting_c, add);
+                if (result == gMeshSuccess_c)
+                {
+                    shell_printf("< Subscribe command sent to ID %d >", id);
+                }
+                else
+                {
+                    shell_printf("< Cannot send command - Error code: 0x%04x >", result);
+                }
+            }
+            else
+            {
+                result = Mesh_Subscribe(gMeshProfileLighting_c, add);
+                if (result == gMeshSuccess_c)
+                {
+                    shell_printf("< Subscribed local node to 0x%04X >", add);
+                }
+                else
+                {
+                    shell_printf("< Could not subscribe local node - Error code: 0x%04x >", result);
+                }
+            }
+            
+        }
+        else if (!strcmp(argv[1], "rem"))
+        {
+            int8_t id = atoi(argv[2]);
+            int16_t add = atoi(argv[3]);
+            if (id != 0)
+            {
+                meshAddress_t destination = GetMeshAddressFromId(id);
+                result = MeshConfigClient_Unsubscribe(destination, gMeshProfileLighting_c, add);
+                if (result == gMeshSuccess_c)
+                {
+                    shell_printf("< Unsubscribe command sent to ID %d >", id);
+                }
+                else
+                {
+                    shell_printf("< Cannot send command - Error code: 0x%04x >", result);
+                }
+            }
+            else
+            {
+                result = Mesh_Unsubscribe(gMeshProfileLighting_c, add);
+                if (result == gMeshSuccess_c)
+                {
+                    shell_printf("< Unsubscribed local node from 0x%04X >", add);
+                }
+                else
+                {
+                    shell_printf("< Could not unsubscribe local node - Error code: 0x%04x >", result);
+                }
+            }            
+        }
+        else
+        {
+            return CMD_RET_USAGE;
+        }
+    }
+    
+    if (result == gMeshSuccess_c)
+    {
+        return CMD_RET_SUCCESS;
+    }
+    else
+    {
+        return CMD_RET_FAILURE;
+    }
+}
+
+int8_t ShellMesh_Relay(uint8_t argc, char * argv[])
+{
+    if (argc > 4 || argc < 3)
+    {
+        return CMD_RET_USAGE;
+    }
+    
+    meshResult_t result;
+    if (argc == 3)
+    {
+        if (strcmp(argv[1], "get"))
+        {
+            return CMD_RET_USAGE;
+        }
+        int8_t id = atoi(argv[2]);
+        if (id != 0)
+        {
+            meshAddress_t destination = GetMeshAddressFromId(id);
+            result = MeshConfigClient_GetRelayState(destination);
+            if (result == gMeshSuccess_c)
+            {
+                shell_printf("< Relay Get command sent to %d >", id);
+            }
+            else
+            {
+                shell_printf("< Cannot send command - Error code: 0x%04x >", result);
+            }
+        }
+        else
+        {
+            bool_t relayEnabled;
+            Mesh_GetRelayState(&relayEnabled);
+            shell_printf("< Commissioner has relay state %d >", relayEnabled);
+            result = gMeshSuccess_c;
+        }
+    }
+    else /* argc == 4 */
+    {
+        if (!strcmp(argv[1], "set"))
+        {
+            int8_t id = atoi(argv[2]);
+            uint8_t state = atoi(argv[3]);
+            if (state > 1)
+            {
+                shell_printf("< Please use Relay state value 1 for ON and 0 for OFF >");
+                return CMD_RET_FAILURE;
+            }
+            if (id != 0)
+            {
+                meshAddress_t destination = GetMeshAddressFromId(id);
+                result = MeshConfigClient_EnableRelay(destination, state);
+                if (result == gMeshSuccess_c)
+                {
+                    shell_printf("< Relay Set command sent to ID %d >", id);
+                }
+                else
+                {
+                    shell_printf("< Cannot send command - Error code: 0x%04x >", result);
+                }
+            }
+            else
+            {
+                Mesh_SetRelayState(state);
+                shell_printf("< Commissioner's relay state set to %d >", state);
+                result = gMeshSuccess_c;
+            }
+        }
+        else
+        {
+            return CMD_RET_USAGE;
+        }
+    }
+    
+    if (result == gMeshSuccess_c)
+    {
+        return CMD_RET_SUCCESS;
+    }
+    else
+    {
+        return CMD_RET_FAILURE;
+    }
+}
+
+int8_t ShellMesh_Ttl(uint8_t argc, char * argv[])
+{
+        if (argc > 4 || argc < 3)
+    {
+        return CMD_RET_USAGE;
+    }
+    
+    meshResult_t result;
+    if (argc == 3)
+    {
+        if (strcmp(argv[1], "get"))
+        {
+            return CMD_RET_USAGE;
+        }
+        int8_t id = atoi(argv[2]);
+        if (id != 0)
+        {
+            meshAddress_t destination = GetMeshAddressFromId(id);
+            result = MeshConfigClient_GetTtl(destination);
+            if (result == gMeshSuccess_c)
+            {
+                shell_printf("< TTL Get command sent to %d >", id);
+            }
+            else
+            {
+                shell_printf("< Cannot send command - Error code: 0x%04x >", result);
+            }
+        }
+        else
+        {
+            uint8_t ttl;
+            Mesh_GetTtl(&ttl);
+            shell_printf("< Commissioner has TTL %d >", ttl);
+            result = gMeshSuccess_c;
+        }
+    }
+    else /* argc == 4 */
+    {
+        if (!strcmp(argv[1], "set"))
+        {
+            int8_t id = atoi(argv[2]);
+            uint8_t ttl = atoi(argv[3]);
+            if (ttl > 63)
+            {
+                shell_printf("< TTL can have a maximum value of 63 >");
+                return CMD_RET_FAILURE;
+            }
+            if (id != 0)
+            {
+                meshAddress_t destination = GetMeshAddressFromId(id);
+                result = MeshConfigClient_SetTtl(destination, ttl);
+                if (result == gMeshSuccess_c)
+                {
+                    shell_printf("< TTL Set command sent to ID %d >", id);
+                }
+                else
+                {
+                    shell_printf("< Cannot send command - Error code: 0x%04x >", result);
+                }
+            }
+            else
+            {
+                Mesh_SetTtl(ttl);
+                shell_printf("< Commissioner's TTL set to %d >", ttl);
+                result = gMeshSuccess_c;
+            }
+        }
+        else
+        {
+            return CMD_RET_USAGE;
+        }
+    }
+    
+    if (result == gMeshSuccess_c)
+    {
+        return CMD_RET_SUCCESS;
+    }
+    else
+    {
+        return CMD_RET_FAILURE;
+    }
+}
+
+int8_t ShellMesh_Light(uint8_t argc, char * argv[])
+{
+    if (argc != 2 && argc != 3)
+    {
+        return CMD_RET_USAGE;
+    }
+    
+    meshAddress_t destination;
+    if  (argc == 2)
+    {
+        destination = gBroadcastAddress_c;
+    }
+    else
+    {
+        int8_t id = atoi(argv[2]);
+        destination = GetMeshAddressFromId(id);
+    }
+    
+    meshResult_t result = gMeshSuccess_c;
+    if (!strcmp(argv[1], "on"))
+    {
+        MeshLightClient_SetLightState(destination, TRUE);
+        shell_printf("< Light ON sent >");
+    }
+    else if (!strcmp(argv[1], "off"))
+    {
+        MeshLightClient_SetLightState(destination, FALSE);
+        shell_printf("< Light OFF sent >");
+    }
+    else if (!strcmp(argv[1], "toggle"))
+    {
+        MeshLightClient_ToggleLight(destination);
+        shell_printf("< Light TOGGLE sent >");
+    }
+    else
+    {
+        return CMD_RET_USAGE;
+    }
+             
+    if (result == gMeshSuccess_c)
+    {
+        return CMD_RET_SUCCESS;
+    }
+    else
+    {
+        return CMD_RET_FAILURE;
+    }
+}
+
+int8_t ShellMesh_Log(uint8_t argc, char * argv[])
+{
+    if (argc > 1)
+    {
+        return CMD_RET_USAGE;
+    }
+    
+    meshResult_t result = gMeshSuccess_c; 
+    
+    mLog = !mLog;
+    if (mLog)
+    {
+        shell_printf("\r\n Packet log is ON.");
+    }
+    else
+    {
+        shell_printf("\r\n Packet log is OFF.");
+    }
+    
+    if (result == gMeshSuccess_c)
+    {
+        return CMD_RET_SUCCESS;
+    }
+    else
+    {
+        return CMD_RET_FAILURE;
+    }
+}
+
+/*! *********************************************************************************
+* @}
+********************************************************************************** */
