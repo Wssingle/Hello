@@ -41,11 +41,11 @@ Serial blue(PTC15, PTC14); //tx, rx
 //End Blue
 
 // Set Sensor Stream details
-char deviceId[] = "6fd70edbd61b35d3d275a278bb7c33ca"; // Device you want to push to
+char deviceId[] = ""; // Device you want to push to
 char streamAcc[] = "acc_rms"; // Stream you want to push to
 char streamMag[] = "mag_rms"; // Stream you want to push to
 //char streamGyr[] = "gyr_rms"; // Stream you want to push to
-char m2xKey[] = "0182418b121ceaf57cfccc689d511198"; // Your M2X API Key or Master API Key
+char m2xKey[] = ""; // Your M2X API Key or Master API Key
 
 int main()
 {
